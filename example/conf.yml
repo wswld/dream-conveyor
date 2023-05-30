@@ -1,0 +1,8 @@
+base_img: null
+cfg: 9
+mask_img: null
+negative: 'badly drawn face, blurred, deformed, no people, bad proportions, wrong seat'
+prompt: 'Teddy Roosevelt in a shiny Caddilac convertible, detailed face, 80s magazine ad'
+seed: 1623504489
+steps: 24
+strength: 0.5

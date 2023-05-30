@@ -1,0 +1,5 @@
+# example/*.png
+.venv
+000
+__pycache__
+cache
