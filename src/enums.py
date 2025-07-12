@@ -5,6 +5,7 @@ from enum import Enum
 class Device(Enum):
     CPU = "cpu"
     CUDA = "cuda" # TODO: Add float16 everywhere when CUDA
+    MPS = "mps"
 
 
 class Gradient(Enum):
@@ -17,6 +18,6 @@ class Gradient(Enum):
 RANGES = {
     Gradient.NoGradient: 100,  # No gradient, so 100 pics generated until stopped
     Gradient.CFGGradient: 20,  # CFG to range from 0 to 19
-    Gradient.StepsGradient: 101,
+    Gradient.StepsGradient: 50, 
     Gradient.StrengthGradient: 10,  # strength to range from 1 to 10
 }
