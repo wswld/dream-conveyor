@@ -4,19 +4,19 @@ from time import time
 from typing import Optional
 
 import torch
-from diffusers import (DiffusionPipeline, EulerAncestralDiscreteScheduler,
-                       SchedulerMixin, StableDiffusionImg2ImgPipeline,
+from diffusers import (DiffusionPipeline, StableDiffusionXLInpaintPipeline, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler,
+                       SchedulerMixin, StableDiffusionImg2ImgPipeline, StableDiffusionXLImg2ImgPipeline,
                        StableDiffusionInpaintPipeline, StableDiffusionControlNetPipeline,
                        ControlNetModel)
 from diffusers import UniPCMultistepScheduler
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 from src.config import Config
 from src.utils import print_params_in_color
 
 from .enums import RANGES, Device, Gradient
 
-DEFAULT_TENSOR_SIZE = 512
+DEFAULT_TENSOR_SIZE = 1024
 
 
 class DreamConveyor:
@@ -25,7 +25,7 @@ class DreamConveyor:
         model: str,
         workspace_path: str,
         gradient: Gradient = Gradient.NoGradient,
-        device: Device = Device.CPU,
+        device: Device = Device.MPS,
         scheduler: SchedulerMixin = EulerAncestralDiscreteScheduler,
         local: bool = True,
         controlnet: bool = True
@@ -78,34 +78,37 @@ class DreamConveyor:
             and conf.mask_img
             and (
                 not self._pipeline
-                or not isinstance(self._pipeline, StableDiffusionInpaintPipeline)
+                or not isinstance(self._pipeline, StableDiffusionXLInpaintPipeline)
             )
         ):
-            self._pipeline = StableDiffusionInpaintPipeline.from_pretrained(
+            self._pipeline = StableDiffusionXLInpaintPipeline.from_pretrained(
                 self.model_name, local_files_only=self.local
             )
             self._scheduler_and_safety()
+        print("PIPELINE BEING REUSED?", isinstance(self._pipeline, StableDiffusionXLImg2ImgPipeline), self._pipeline is not None, self.model_name)
         if (
             conf.base_img
             and not conf.mask_img
             and (
                 not self._pipeline
-                or not isinstance(self._pipeline, StableDiffusionImg2ImgPipeline)
+                or not isinstance(self._pipeline, StableDiffusionXLImg2ImgPipeline)
             )
         ):
+            print('here')
             if self.controlnet:
-                controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-scribble")
+                controlnet = ControlNetModel.from_pretrained(
+                    "lllyasviel/sd-controlnet-scribble")
                 self._pipeline = StableDiffusionControlNetPipeline.from_pretrained(
                     self.model_name, controlnet=controlnet, local_files_only=self.local
                 )
             else:
-                self._pipeline = StableDiffusionImg2ImgPipeline.from_pretrained(
+                self._pipeline = StableDiffusionXLImg2ImgPipeline.from_pretrained(
                     self.model_name, local_files_only=self.local
                 )
-            self._scheduler_and_safety()
+                self._scheduler_and_safety()
         if not conf.base_img and (
             not self._pipeline
-            or isinstance(self._pipeline, StableDiffusionImg2ImgPipeline)
+            or isinstance(self._pipeline, StableDiffusionXLImg2ImgPipeline)
         ):
             self._pipeline = DiffusionPipeline.from_pretrained(
                 self.model_name, local_files_only=self.local
@@ -119,7 +122,8 @@ class DreamConveyor:
 
     def _scheduler_and_safety(self):
         if self.controlnet:
-            self._pipeline.scheduler = UniPCMultistepScheduler.from_config(self._pipeline.scheduler.config)
+            self._pipeline.scheduler = UniPCMultistepScheduler.from_config(
+                self._pipeline.scheduler.config)
         else:
             self._pipeline.scheduler = self.scheduler.from_config(
                 self._pipeline.scheduler.config
@@ -133,6 +137,11 @@ class DreamConveyor:
 
         self._pipeline.safety_checker = dummy
 
+    def _reset_scheduler(self, steps: int):
+        scheduler_config = self._pipeline.scheduler.config
+        scheduler_config['num_train_timesteps'] = steps
+        self._pipeline.scheduler = self.scheduler.from_config(scheduler_config)
+
     def _mkdir_cd(self, workspace_path: str) -> str:
         if not os.path.exists(workspace_path):
             os.makedirs(workspace_path)
@@ -140,8 +149,10 @@ class DreamConveyor:
         return workspace_path
 
     def go_br(self, prompt_prepend: Optional[list] = None):
-        r = RANGES[self.gradient] if not prompt_prepend else len(prompt_prepend)
+        r = RANGES[self.gradient] if not prompt_prepend else len(
+            prompt_prepend)
         for i in range(r):
+            # torch.mps.empty_cache()
             conf = self.conf
             add_params = {"strength": conf.strength}
             image = self.image
@@ -158,9 +169,7 @@ class DreamConveyor:
             cfg = conf.cfg if not self.gradient == Gradient.CFGGradient else i * 0.5
             if self.gradient == Gradient.StrengthGradient:
                 add_params["strength"] = (i + 1) / 10
-            conf.steps = (
-                conf.steps if not self.gradient == Gradient.StepsGradient else i
-            )
+            conf.steps = i + 1 if self.gradient == Gradient.StepsGradient else conf.steps
             print_params_in_color(
                 seed,
                 cfg,
@@ -182,5 +191,18 @@ class DreamConveyor:
                 generator=self.generator,
                 **add_params,
             ).images[0]
-            step = i if not prompt_prepend else prompt_prepend[i].replace(" ", "")
-            image.save(f"{str(int(time()))}-cfg{cfg}-steps{conf.steps}-seed{seed}.png")
+            scheduler_config = self._pipeline.scheduler.config
+            print(scheduler_config['num_train_timesteps'])
+            step = i if not prompt_prepend else prompt_prepend[i].replace(
+                " ", "")
+            print(self.pipeline.text_encoder.config.model_type)
+            # Create metadata dict
+            meta = PngImagePlugin.PngInfo()
+            meta.add_text("Prompt", final_prompt)
+            meta.add_text("Seed", str(seed))
+            meta.add_text("CFG", str(cfg))
+            meta.add_text("Steps", str(conf.steps))
+            meta.add_text("Model", self.model_name)
+
+            image.save(
+                f"{str(int(time()))}-cfg{cfg}-steps{conf.steps}-seed{seed}.png", pnginfo=meta)
